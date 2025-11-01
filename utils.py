@@ -62,3 +62,9 @@ def load_model(G, folder, device):
     ckpt = torch.load(ckpt_path, map_location=device)
     G.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
     return G
+
+def load_discriminator(D, folder, device):
+    ckpt_path = os.path.join(folder, 'D.pth')
+    ckpt = torch.load(ckpt_path, map_location=device)
+    D.load_state_dict({k.replace('module.', ''): v for k, v in ckpt.items()})
+    return D
