@@ -8,8 +8,8 @@ from model import Generator, Discriminator
 from utils import load_model, load_discriminator
 
 
-REFINE_STEPS = 3
-REFINE_STEP_SIZE = 0.05
+REFINE_STEPS = 1
+REFINE_STEP_SIZE = 0.1
 REFINE_CLIP = 1.0
 
 
