@@ -5,6 +5,8 @@ import torch
 import torchvision
 
 from model import Generator, Discriminator
+from train_diffaug import DEFAULT_CHECKPOINT_DIR as DIFFAUG_CHECKPOINT_DIR
+from train_diffaug import ensure_diffaug_weights
 from utils import load_model, load_discriminator
 
 
@@ -31,7 +33,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=2048, help="Generation batch size.")
     parser.add_argument("--num_samples", type=int, default=10000, help="Number of samples to output.")
     parser.add_argument(
-        "--checkpoint_dir", type=str, default="checkpoints", help="Directory with G.pth and D.pth."
+        "--checkpoint_dir",
+        type=str,
+        default=DIFFAUG_CHECKPOINT_DIR,
+        help="Directory with G.pth and D.pth.",
     )
     parser.add_argument(
         "--output_dir", type=str, default="samples", help="Directory to write refined samples."
@@ -57,9 +62,21 @@ def refine_samples(imgs: torch.Tensor, discriminator: Discriminator) -> torch.Te
 
 def main():
     args = parse_args()
-    device = select_device()
-
     checkpoint_dir = Path(args.checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    ensure_diffaug_weights(checkpoint_dir)
+
+    fallback_dir = Path("checkpoints")
+    if (
+        (not (checkpoint_dir / "G.pth").exists() or not (checkpoint_dir / "D.pth").exists())
+        and fallback_dir != checkpoint_dir
+        and (fallback_dir / "G.pth").exists()
+        and (fallback_dir / "D.pth").exists()
+    ):
+        print(f"Falling back to {fallback_dir} for checkpoints.")
+        checkpoint_dir = fallback_dir
+
+    device = select_device()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
