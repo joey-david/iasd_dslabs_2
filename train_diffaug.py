@@ -29,14 +29,34 @@ def _register_diffaugment_ops() -> None:
     def rand_translation(x: torch.Tensor, ratio: float = 0.125) -> torch.Tensor:
         if ratio <= 0:
             return x
-        batch = x.size(0)
-        translation = torch.zeros(batch, 2, 3, device=x.device, dtype=x.dtype)
-        translation[:, 0, 0] = 1.0
-        translation[:, 1, 1] = 1.0
-        translation[:, 0, 2] = (torch.rand(batch, device=x.device) * 2 - 1) * ratio
-        translation[:, 1, 2] = (torch.rand(batch, device=x.device) * 2 - 1) * ratio
-        grid = F.affine_grid(translation, x.size(), align_corners=False)
-        return F.grid_sample(x, grid, padding_mode="reflection", align_corners=False)
+
+        batch, channels, height, width = x.shape
+        max_shift_h = int(height * ratio + 0.5)
+        max_shift_w = int(width * ratio + 0.5)
+        if max_shift_h == 0 and max_shift_w == 0:
+            return x
+
+        # Reflective padding lets us slice translated crops without grid_sample,
+        # which avoids backends missing the grid_sampler backward implementation.
+        pad = (max_shift_w, max_shift_w, max_shift_h, max_shift_h)
+        padded = F.pad(x, pad, mode="reflect")
+
+        shift_h = torch.randint(
+            -max_shift_h, max_shift_h + 1, (batch,), device=x.device
+        )
+        shift_w = torch.randint(
+            -max_shift_w, max_shift_w + 1, (batch,), device=x.device
+        )
+
+        translated = []
+        for idx in range(batch):
+            h_start = max_shift_h + shift_h[idx].item()
+            w_start = max_shift_w + shift_w[idx].item()
+            translated.append(
+                padded[idx : idx + 1, :, h_start : h_start + height, w_start : w_start + width]
+            )
+
+        return torch.cat(translated, dim=0)
 
     def rand_cutout(x: torch.Tensor, ratio: float = 0.5) -> torch.Tensor:
         if ratio <= 0:
