@@ -13,8 +13,11 @@ from scipy import linalg
 from torch.utils.data import DataLoader, Subset
 try:
     from torchmetrics.image.inception import InceptionV3
-except ImportError:  # fallback for older torchmetrics releases
-    from torchmetrics.image.fid import InceptionV3
+except (ImportError, AttributeError):  # torchmetrics>=1.4 or envs without direct export
+    try:
+        from torchmetrics.image.fid import InceptionV3  # legacy fallback
+    except (ImportError, AttributeError):
+        from torchmetrics.image.fid import FIDInceptionV3 as InceptionV3  # newest fallback
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 from tqdm import tqdm
