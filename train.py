@@ -120,29 +120,23 @@ import torch
 import torch.nn as nn
 
 
-
-
 def calculate_gradient_penalty(D, real_data, fake_data, device, lambda_gp=10):
-
-    
-
     batch_size = real_data.size(0)
-    alpha = torch.rand(batch_size, 1).to(device)
-    alpha = alpha.expand_as(real_data)
-
-
-    interpolates = alpha * real_data + ((1 - alpha) * fake_data)
+    alpha = torch.rand(batch_size, 1, 1, 1, device=device)
+    interpolates = alpha * real_data + (1 - alpha) * fake_data
     interpolates.requires_grad_(True)
-    
 
     disc_interpolates = D(interpolates)
-    
 
-    gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=interpolates,
-                                    grad_outputs=torch.ones(disc_interpolates.size()).to(device),
-                                    create_graph=True, retain_graph=True, only_inputs=True)[0]
-    
- 
+    gradients = torch.autograd.grad(
+        outputs=disc_interpolates,
+        inputs=interpolates,
+        grad_outputs=torch.ones_like(disc_interpolates, device=device),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
     gradients = gradients.view(batch_size, -1)
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * lambda_gp
     return gradient_penalty
@@ -158,7 +152,7 @@ def D_train_wgangp(real_data, G, D, D_optimizer, device):
     
 
     z = torch.randn(batch_size, 100).to(device)
-    fake_data = G(z).detach() 
+    fake_data = G(z).detach()
     D_fake = D(fake_data)
     D_loss_fake = torch.mean(D_fake)
     
@@ -260,9 +254,8 @@ if __name__ == '__main__':
 
 
     print('Model loading...')
-    mnist_dim = 784
-    G = Generator(g_output_dim=mnist_dim).to(device)
-    D = Discriminator(mnist_dim).to(device)
+    G = Generator().to(device)
+    D = Discriminator().to(device)
 
     if args.gpus > 1:
         G = torch.nn.DataParallel(G)
@@ -279,7 +272,7 @@ if __name__ == '__main__':
     n_epoch = args.epochs
     for epoch in tqdm(range(1, n_epoch + 1)):
         for batch_idx, (x, _) in enumerate(train_loader):
-            x = x.view(-1, mnist_dim).to(device)
+            x = x.to(device)
             
 
             D_loss, W_dist = D_train_wgangp(x, G, D, D_optimizer, device)

@@ -157,7 +157,9 @@ def collect_fake_features(
         current = min(batch_size, num_samples - total)
         z = torch.randn(current, latent_dim, device=device)
         with torch.inference_mode():
-            generated = generator(z).view(current, *MNIST_IMAGE_SHAPE)
+            generated = generator(z)
+        if generated.dim() == 2:
+            generated = generated.view(current, *MNIST_IMAGE_SHAPE)
         images = ((generated + 1.0) / 2.0).clamp(0.0, 1.0)
         if store_samples:
             saved_count = sum(batch.size(0) for batch in saved_batches)

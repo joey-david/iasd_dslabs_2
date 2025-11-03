@@ -100,8 +100,7 @@ def apply_diffaugment(x: torch.Tensor, policy: str = DEFAULT_POLICY) -> torch.Te
 
 def discriminator_forward(images: torch.Tensor, D: nn.Module, policy: str) -> torch.Tensor:
     augmented = apply_diffaugment(images, policy)
-    flattened = augmented.view(images.size(0), -1)
-    return D(flattened)
+    return D(augmented)
 
 
 def calculate_gradient_penalty(
@@ -144,8 +143,7 @@ def d_step(
     d_loss_real = -real_logits.mean()
 
     z = torch.randn(batch_size, 100, device=device)
-    fake_vectors = G(z)
-    fake_images = fake_vectors.view(batch_size, *MNIST_SHAPE)
+    fake_images = G(z)
 
     fake_logits = discriminator_forward(fake_images.detach(), D, policy)
     d_loss_fake = fake_logits.mean()
@@ -170,8 +168,7 @@ def g_step(
 ) -> float:
     G.zero_grad()
     z = torch.randn(batch_size, 100, device=device)
-    fake_vectors = G(z)
-    fake_images = fake_vectors.view(batch_size, *MNIST_SHAPE)
+    fake_images = G(z)
     fake_logits = discriminator_forward(fake_images, D, policy)
     g_loss = -fake_logits.mean()
     g_loss.backward()
@@ -224,9 +221,8 @@ def train_diffaug(
     download = not Path(data_root, "MNIST").exists()
     loader = create_dataloaders(batch_size, data_root, download)
 
-    mnist_dim = 28 * 28
-    G = Generator(g_output_dim=mnist_dim).to(device)
-    D = Discriminator(mnist_dim).to(device)
+    G = Generator().to(device)
+    D = Discriminator().to(device)
 
     if device_label == "cuda" and effective_gpus > 1:
         G = nn.DataParallel(G)

@@ -51,7 +51,7 @@ def refine_samples(imgs: torch.Tensor, discriminator: Discriminator) -> torch.Te
 
     for _ in range(REFINE_STEPS):
         refined = refined.detach().requires_grad_(True)
-        logits = discriminator(refined.view(refined.size(0), -1))
+        logits = discriminator(refined)
         loss = -torch.log(logits + eps).mean()
         grad = torch.autograd.grad(loss, refined)[0]
         refined = refined - REFINE_STEP_SIZE * grad
@@ -94,7 +94,7 @@ def main():
         current_batch = min(args.batch_size, args.num_samples - total_generated)
         z = torch.randn(current_batch, 100, device=device)
         with torch.no_grad():
-            samples = generator(z).view(current_batch, 1, 28, 28)
+            samples = generator(z)
 
         samples = refine_samples(samples, discriminator)
 
