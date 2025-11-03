@@ -51,6 +51,36 @@ chmod +x scripts/train.sh
 # Submit the job to Slurm
 scripts/train.sh
 ```
+
+## Running with Docker
+
+Build the GPU-enabled image once (the build pre-downloads the Inception weights used for the metrics):
+
+```bash
+docker build -t mnist-gan-eval .
+```
+
+On the remote GPU node, mount the checkpoints, evaluation outputs, MNIST data cache, and (optionally) any figures you want to persist. Then launch the metrics script inside the container:
+
+```bash
+docker run --rm \
+  --gpus all \
+  --runtime=nvidia \
+  -e NVIDIA_VISIBLE_DEVICES=all \
+  -v "$PWD/checkpoints":/app/checkpoints \
+  -v "$PWD/checkpoints_diffaug":/app/checkpoints_diffaug \
+  -v "$PWD/results":/app/results \
+  -v "$PWD/data":/app/data \
+  -v "$HOME/.cache/torch":/app/.cache/torch \
+  mnist-gan-eval \
+  evaluate_metrics.py \
+    --checkpoint baseline=checkpoints \
+    --checkpoint diffaug=checkpoints_diffaug \
+    --num-samples 10000 \
+    --batch-size 512
+```
+
+The script writes metric reports to `results/docker_eval/<label>/metrics.json` and saves a sample grid for each evaluated checkpoint. If `checkpoints_diffaug` is unavailable you can omit that `--checkpoint` argument. Increase `--num-samples` to the desired evaluation size (10 000 matches the testing platform) and reuse the mounted caches to avoid repeated downloads on subsequent runs.
 ## train.py
 This script performs adversarial training for a GAN. Before running it, ensure the `DATA` variable in `scripts/train.sh` points to your dataset directory. If left unchanged, the script will create a default `data` folder in the repository root. If you use Juliet, no changes are required—the default path is already configured. You can adjust the learning rate, number of epochs, and batch size directly in `scripts/train.sh`.
 
@@ -79,4 +109,3 @@ When your code will be test, we will execute:
 
 ## Checkpoints
 Push the minimal amount of models in the folder *checkpoints*.
-

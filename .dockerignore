@@ -1,0 +1,13 @@
+.git
+.gitignore
+__pycache__/
+*.py[cod]
+*.swp
+*.swo
+*.tmp
+nohup*
+results/
+runs/
+figs/
+data/
+samples/
