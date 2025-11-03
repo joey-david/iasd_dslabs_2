@@ -4,5 +4,5 @@ scipy
 tqdm
 torch
 torchvision
-torchmetrics
+pytorch-fid
 prdc

@@ -9,15 +9,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from prdc import compute_prdc
+from pytorch_fid.inception import InceptionV3
 from scipy import linalg
 from torch.utils.data import DataLoader, Subset
-try:
-    from torchmetrics.image.inception import InceptionV3
-except (ImportError, AttributeError):  # torchmetrics>=1.4 or envs without direct export
-    try:
-        from torchmetrics.image.fid import InceptionV3  # legacy fallback
-    except (ImportError, AttributeError):
-        from torchmetrics.image.fid import FIDInceptionV3 as InceptionV3  # newest fallback
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 from tqdm import tqdm
@@ -64,7 +58,8 @@ def select_device() -> torch.device:
 
 
 def build_inception(device: torch.device) -> InceptionV3:
-    model = InceptionV3(output_blocks=[3], normalize_input=False)
+    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[FEATURE_DIM]
+    model = InceptionV3([block_idx])
     model.to(device)
     model.eval()
     return model

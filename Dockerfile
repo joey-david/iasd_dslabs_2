@@ -22,14 +22,8 @@ COPY . /app
 ENV PYTHONPATH=/app
 
 RUN python - <<'PY'
-try:
-    from torchmetrics.image.inception import InceptionV3
-except (ImportError, AttributeError):
-    try:
-        from torchmetrics.image.fid import InceptionV3
-    except (ImportError, AttributeError):
-        from torchmetrics.image.fid import FIDInceptionV3 as InceptionV3
-InceptionV3(output_blocks=[3], normalize_input=False)
+from pytorch_fid.inception import InceptionV3
+model = InceptionV3([InceptionV3.BLOCK_INDEX_BY_DIM[2048]])
 PY
 
 ENTRYPOINT ["python"]
