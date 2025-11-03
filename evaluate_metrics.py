@@ -11,7 +11,10 @@ import torch.nn.functional as F
 from prdc import compute_prdc
 from scipy import linalg
 from torch.utils.data import DataLoader, Subset
-from torchmetrics.image.fid import InceptionV3
+try:
+    from torchmetrics.image.inception import InceptionV3
+except ImportError:  # fallback for older torchmetrics releases
+    from torchmetrics.image.fid import InceptionV3
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 from tqdm import tqdm

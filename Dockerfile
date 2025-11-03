@@ -22,7 +22,10 @@ COPY . /app
 ENV PYTHONPATH=/app
 
 RUN python - <<'PY'
-from torchmetrics.image.fid import InceptionV3
+try:
+    from torchmetrics.image.inception import InceptionV3
+except ImportError:
+    from torchmetrics.image.fid import InceptionV3
 InceptionV3(output_blocks=[3], normalize_input=False)
 PY
 
