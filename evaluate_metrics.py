@@ -3,9 +3,13 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 from prdc import compute_prdc
@@ -286,6 +290,67 @@ def format_metrics_table(results: Dict[str, Dict[str, float]]) -> str:
     return "\n".join(lines)
 
 
+def load_loss_history(path: Path) -> Optional[Dict[str, List[float]]]:
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fp:
+            data: Dict[str, List[float]] = json.load(fp)
+        required_keys = {"epochs", "train_total_loss", "val_total_loss"}
+        if not required_keys.issubset(data.keys()):
+            return None
+        return data
+    except (json.JSONDecodeError, OSError, TypeError):
+        return None
+
+
+def plot_loss_curves(log_root: Path, output_root: Path) -> None:
+    baseline_path = log_root / "baseline.json"
+    diffaug_path = log_root / "diffaug.json"
+
+    baseline = load_loss_history(baseline_path)
+    diffaug = load_loss_history(diffaug_path)
+
+    if baseline is None or diffaug is None:
+        missing = []
+        if baseline is None:
+            missing.append(str(baseline_path))
+        if diffaug is None:
+            missing.append(str(diffaug_path))
+        if missing:
+            print("Skipping loss plotting. Missing or invalid logs: " + ", ".join(missing))
+        return
+
+    loss_dir = output_root / "loss_plots"
+    loss_dir.mkdir(parents=True, exist_ok=True)
+
+    plots = [
+        ("train_total_loss", loss_dir / "train_loss.png", "Training Loss"),
+        ("val_total_loss", loss_dir / "val_loss.png", "Validation Loss"),
+    ]
+
+    for key, destination, title in plots:
+        baseline_values = baseline.get(key)
+        diffaug_values = diffaug.get(key)
+        if baseline_values is None or diffaug_values is None:
+            print(f"Skipping plot for {key} because the key is missing in the logs.")
+            continue
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(baseline["epochs"], baseline_values, label="baseline", linewidth=2.0)
+        ax.plot(diffaug["epochs"], diffaug_values, label="diffaug", linewidth=2.0)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.set_title(title)
+        ax.legend()
+        ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+        fig.tight_layout()
+        fig.savefig(destination)
+        plt.close(fig)
+
+    print(f"Saved loss plots to {loss_dir}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate FID/precision/recall metrics for MNIST GAN checkpoints."
@@ -365,6 +430,7 @@ def main() -> None:
         split=args.real_split,
     )
     results = evaluate_checkpoints(checkpoints, args, device, real_stats, inception)
+    plot_loss_curves(Path("results/training_logs"), Path(args.output_root))
     print(format_metrics_table(results))
 
 

@@ -6,3 +6,4 @@ torch
 torchvision
 pytorch-fid
 prdc
+matplotlib

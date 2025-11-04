@@ -1,7 +1,8 @@
 import argparse
+import json
 import os
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -110,6 +111,7 @@ def calculate_gradient_penalty(
     device: torch.device,
     lambda_gp: float = 10.0,
     policy: str = DEFAULT_POLICY,
+    create_graph: bool = True,
 ) -> torch.Tensor:
     batch_size = real.size(0)
     alpha = torch.rand(batch_size, 1, 1, 1, device=device)
@@ -121,12 +123,98 @@ def calculate_gradient_penalty(
         outputs=disc_interpolates,
         inputs=interpolates,
         grad_outputs=grad_outputs,
-        create_graph=True,
-        retain_graph=True,
+        create_graph=create_graph,
+        retain_graph=create_graph,
         only_inputs=True,
     )[0]
     gradients = gradients.view(batch_size, -1)
     return ((gradients.norm(2, dim=1) - 1.0) ** 2).mean() * lambda_gp
+
+
+def critic_loss(
+    real_images: torch.Tensor,
+    G: nn.Module,
+    D: nn.Module,
+    device: torch.device,
+    policy: str,
+    *,
+    create_graph: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    batch_size = real_images.size(0)
+    real_logits = discriminator_forward(real_images, D, policy)
+    d_loss_real = -real_logits.mean()
+
+    z = torch.randn(batch_size, 100, device=device)
+    fake_images = G(z).detach()
+    fake_logits = discriminator_forward(fake_images, D, policy)
+    d_loss_fake = fake_logits.mean()
+
+    gradient_penalty = calculate_gradient_penalty(
+        D, real_images, fake_images, device, policy=policy, create_graph=create_graph
+    )
+
+    d_loss = d_loss_real + d_loss_fake + gradient_penalty
+    wasserstein_distance = real_logits.mean() - fake_logits.mean()
+    return d_loss, wasserstein_distance
+
+
+def generator_loss(
+    batch_size: int,
+    G: nn.Module,
+    D: nn.Module,
+    device: torch.device,
+    policy: str,
+) -> torch.Tensor:
+    z = torch.randn(batch_size, 100, device=device)
+    fake_images = G(z)
+    fake_logits = discriminator_forward(fake_images, D, policy)
+    return -fake_logits.mean()
+
+
+def average(values: List[float]) -> float:
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
+
+
+def evaluate_losses(
+    loader: Iterable[Tuple[torch.Tensor, torch.Tensor]],
+    G: nn.Module,
+    D: nn.Module,
+    device: torch.device,
+    policy: str,
+) -> Tuple[float, float]:
+    was_training_g = G.training
+    was_training_d = D.training
+    G.eval()
+    D.eval()
+
+    critic_losses: List[float] = []
+    generator_losses: List[float] = []
+
+    for real_images, _ in loader:
+        real_images = real_images.to(device)
+        d_loss, _ = critic_loss(real_images, G, D, device, policy, create_graph=False)
+        critic_losses.append(float(d_loss.detach().cpu().item()))
+
+        with torch.no_grad():
+            g_loss = generator_loss(real_images.size(0), G, D, device, policy)
+        generator_losses.append(float(g_loss.cpu().item()))
+
+    if was_training_g:
+        G.train()
+    if was_training_d:
+        D.train()
+
+    G.zero_grad(set_to_none=True)
+    D.zero_grad(set_to_none=True)
+    return average(critic_losses), average(generator_losses)
+
+
+def save_loss_history(history: Dict[str, List[float]], destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8") as fp:
+        json.dump(history, fp, indent=2)
 
 
 def d_step(
@@ -137,25 +225,12 @@ def d_step(
     device: torch.device,
     policy: str,
 ) -> Tuple[float, float]:
-    D.zero_grad()
-    batch_size = real_images.size(0)
-    real_logits = discriminator_forward(real_images, D, policy)
-    d_loss_real = -real_logits.mean()
-
-    z = torch.randn(batch_size, 100, device=device)
-    fake_images = G(z)
-
-    fake_logits = discriminator_forward(fake_images.detach(), D, policy)
-    d_loss_fake = fake_logits.mean()
-
-    gradient_penalty = calculate_gradient_penalty(D, real_images, fake_images.detach(), device, policy=policy)
-
-    d_loss = d_loss_real + d_loss_fake + gradient_penalty
+    D.zero_grad(set_to_none=True)
+    d_loss, wasserstein_distance = critic_loss(real_images, G, D, device, policy)
     d_loss.backward()
     optimizer.step()
 
-    wasserstein_distance = real_logits.mean() - fake_logits.mean()
-    return d_loss.item(), wasserstein_distance.item()
+    return float(d_loss.detach().cpu().item()), float(wasserstein_distance.detach().cpu().item())
 
 
 def g_step(
@@ -166,32 +241,42 @@ def g_step(
     device: torch.device,
     policy: str,
 ) -> float:
-    G.zero_grad()
-    z = torch.randn(batch_size, 100, device=device)
-    fake_images = G(z)
-    fake_logits = discriminator_forward(fake_images, D, policy)
-    g_loss = -fake_logits.mean()
+    G.zero_grad(set_to_none=True)
+    g_loss = generator_loss(batch_size, G, D, device, policy)
     g_loss.backward()
     optimizer.step()
-    return g_loss.item()
+    return float(g_loss.detach().cpu().item())
 
 
-def create_dataloaders(batch_size: int, data_root: str, download: bool) -> Iterable[torch.Tensor]:
+def create_dataloaders(
+    batch_size: int,
+    data_root: str,
+    download: bool,
+) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     transform = transforms.Compose(
         [
             transforms.ToTensor(),
             transforms.Normalize(mean=(0.5,), std=(0.5,)),
         ]
     )
-    dataset = datasets.MNIST(root=data_root, train=True, transform=transform, download=download)
-    loader = torch.utils.data.DataLoader(
-        dataset=dataset,
+    train_dataset = datasets.MNIST(root=data_root, train=True, transform=transform, download=download)
+    val_dataset = datasets.MNIST(root=data_root, train=False, transform=transform, download=download)
+
+    train_loader = torch.utils.data.DataLoader(
+        dataset=train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
     )
-    return loader
+    val_loader = torch.utils.data.DataLoader(
+        dataset=val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+    )
+    return train_loader, val_loader
 
 
 def prepare_device(requested_gpus: int) -> Tuple[torch.device, str, int]:
@@ -219,7 +304,7 @@ def train_diffaug(
     os.makedirs(checkpoint_dir, exist_ok=True)
     data_root = os.getenv("DATA", "data")
     download = not Path(data_root, "MNIST").exists()
-    loader = create_dataloaders(batch_size, data_root, download)
+    train_loader, val_loader = create_dataloaders(batch_size, data_root, download)
 
     G = Generator().to(device)
     D = Discriminator().to(device)
@@ -233,18 +318,39 @@ def train_diffaug(
 
     global_step = 0
 
+    history: Dict[str, List[float]] = {
+        "epochs": [],
+        "train_d_loss": [],
+        "train_g_loss": [],
+        "train_total_loss": [],
+        "train_w_distance": [],
+        "val_d_loss": [],
+        "val_g_loss": [],
+        "val_total_loss": [],
+    }
+
     epoch_iterator = tqdm(range(1, epochs + 1), desc="diffaug-epochs", leave=False)
     for epoch in epoch_iterator:
-        batch_iterator = tqdm(loader, desc=f"epoch-{epoch}", leave=False)
+        train_d_losses: List[float] = []
+        train_g_losses: List[float] = []
+        train_wd: List[float] = []
+
+        batch_iterator = tqdm(train_loader, desc=f"diffaug-train-{epoch}", leave=False)
         for real_images, _ in batch_iterator:
             real_images = real_images.to(device)
 
             d_loss, w_dist = d_step(real_images, G, D, d_optimizer, device, policy)
-            batch_iterator.set_postfix(d_loss=d_loss, w_dist=w_dist)
+            train_d_losses.append(d_loss)
+            train_wd.append(w_dist)
+
+            postfix = {"d_loss": d_loss, "w_dist": w_dist}
 
             if global_step % N_CRITIC == 0:
                 g_loss = g_step(real_images.size(0), G, D, g_optimizer, device, policy)
-                batch_iterator.set_postfix(d_loss=d_loss, g_loss=g_loss, w_dist=w_dist)
+                train_g_losses.append(g_loss)
+                postfix["g_loss"] = g_loss
+
+            batch_iterator.set_postfix(postfix)
 
             global_step += 1
             if max_steps is not None and global_step >= max_steps:
@@ -253,11 +359,36 @@ def train_diffaug(
         if max_steps is not None and global_step >= max_steps:
             break
 
+        avg_train_d = average(train_d_losses)
+        avg_train_g = average(train_g_losses)
+        avg_train_total = avg_train_d + avg_train_g
+        avg_train_wd = average(train_wd)
+
+        val_d, val_g = evaluate_losses(val_loader, G, D, device, policy)
+        val_total = val_d + val_g
+
+        history["epochs"].append(epoch)
+        history["train_d_loss"].append(avg_train_d)
+        history["train_g_loss"].append(avg_train_g)
+        history["train_total_loss"].append(avg_train_total)
+        history["train_w_distance"].append(avg_train_wd)
+        history["val_d_loss"].append(val_d)
+        history["val_g_loss"].append(val_g)
+        history["val_total_loss"].append(val_total)
+
+        epoch_iterator.set_postfix(
+            train_total=f"{avg_train_total:.4f}", val_total=f"{val_total:.4f}", w_dist=f"{avg_train_wd:.4f}"
+        )
+
         if epoch % 10 == 0:
             save_models(G, D, str(checkpoint_dir))
 
     save_models(G, D, str(checkpoint_dir))
-    print(f"Training complete. Checkpoints stored in {checkpoint_dir}")
+    save_loss_history(history, Path("results/training_logs/diffaug.json"))
+    print(
+        f"Training complete. Checkpoints stored in {checkpoint_dir} "
+        "and loss history saved to results/training_logs/diffaug.json"
+    )
 
 
 def ensure_diffaug_weights(checkpoint_dir: Path, requested_gpus: int = -1) -> None:
