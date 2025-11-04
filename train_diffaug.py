@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import random
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -131,8 +132,26 @@ def apply_diffaugment(x: torch.Tensor, policy: str = DEFAULT_POLICY) -> torch.Te
     return output.clamp(-1, 1)
 
 
-def discriminator_forward(images: torch.Tensor, D: nn.Module, policy: str) -> torch.Tensor:
-    augmented = apply_diffaugment(images, policy)
+def discriminator_forward(
+    images: torch.Tensor,
+    D: nn.Module,
+    policy: str,
+    rng_seed: Optional[int] = None,
+) -> torch.Tensor:
+    if rng_seed is None:
+        augmented = apply_diffaugment(images, policy)
+    else:
+        devices = None
+        if images.is_cuda:
+            device_index = images.device.index
+            if device_index is None:
+                device_index = torch.cuda.current_device()
+            devices = [device_index]
+        with torch.random.fork_rng(devices=devices, enabled=True):
+            torch.manual_seed(rng_seed)
+            if images.is_cuda:
+                torch.cuda.manual_seed_all(rng_seed)
+            augmented = apply_diffaugment(images, policy)
     return D(augmented)
 
 
@@ -144,12 +163,13 @@ def calculate_gradient_penalty(
     lambda_gp: float = 10.0,
     policy: str = DEFAULT_POLICY,
     create_graph: bool = True,
+    rng_seed: Optional[int] = None,
 ) -> torch.Tensor:
     batch_size = real.size(0)
     alpha = torch.rand(batch_size, 1, 1, 1, device=device)
     interpolates = alpha * real + (1 - alpha) * fake
     interpolates.requires_grad_(True)
-    disc_interpolates = discriminator_forward(interpolates, D, policy)
+    disc_interpolates = discriminator_forward(interpolates, D, policy, rng_seed=rng_seed)
     grad_outputs = torch.ones_like(disc_interpolates, device=device)
     gradients = torch.autograd.grad(
         outputs=disc_interpolates,
@@ -173,16 +193,23 @@ def critic_loss(
     create_graph: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     batch_size = real_images.size(0)
-    real_logits = discriminator_forward(real_images, D, policy)
+    rng_seed = random.randint(0, 2**31 - 1)
+    real_logits = discriminator_forward(real_images, D, policy, rng_seed=rng_seed)
     d_loss_real = -real_logits.mean()
 
     z = torch.randn(batch_size, 100, device=device)
     fake_images = G(z).detach()
-    fake_logits = discriminator_forward(fake_images, D, policy)
+    fake_logits = discriminator_forward(fake_images, D, policy, rng_seed=rng_seed)
     d_loss_fake = fake_logits.mean()
 
     gradient_penalty = calculate_gradient_penalty(
-        D, real_images, fake_images, device, policy=policy, create_graph=create_graph
+        D,
+        real_images,
+        fake_images,
+        device,
+        policy=policy,
+        create_graph=create_graph,
+        rng_seed=rng_seed,
     )
 
     d_loss = d_loss_real + d_loss_fake + gradient_penalty
