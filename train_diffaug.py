@@ -393,6 +393,8 @@ def train_diffaug(
     best_val_total = float("inf")
     epochs_without_improvement = 0
     best_epoch = 0
+    last_val_total: Optional[float] = None
+    early_stop_active = False
     for epoch in epoch_iterator:
         train_d_losses: List[float] = []
         train_g_losses: List[float] = []
@@ -443,11 +445,14 @@ def train_diffaug(
             train_total=f"{avg_train_total:.4f}", val_total=f"{val_total:.4f}", w_dist=f"{avg_train_wd:.4f}"
         )
 
+        if last_val_total is not None and val_total < last_val_total:
+            early_stop_active = True
+
         if val_total < best_val_total:
             best_val_total = val_total
             epochs_without_improvement = 0
             best_epoch = epoch
-        else:
+        elif early_stop_active:
             epochs_without_improvement += 1
             if epochs_without_improvement >= EARLY_STOP_PATIENCE:
                 best_epoch_display = best_epoch if best_epoch > 0 else "N/A"
@@ -456,6 +461,10 @@ def train_diffaug(
                     f"Best validation total loss {best_val_total:.4f} at epoch {best_epoch_display}."
                 )
                 break
+        else:
+            epochs_without_improvement = 0
+
+        last_val_total = val_total
 
         if epoch % 10 == 0:
             save_models(G, D, str(checkpoint_dir))
