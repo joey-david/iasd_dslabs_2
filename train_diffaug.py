@@ -18,7 +18,7 @@ from utils import save_models
 N_CRITIC = 2
 BETA1 = 0.5
 MNIST_SHAPE = (1, 28, 28)
-DEFAULT_POLICY = "translation,cutout"
+DEFAULT_POLICY = "translation,gaussian_blur,gaussian_noise"
 DEFAULT_CHECKPOINT_DIR = "checkpoints_diffaug"
 
 _AUGMENT_FNS = {}
@@ -59,27 +59,59 @@ def _register_diffaugment_ops() -> None:
 
         return torch.cat(translated, dim=0)
 
-    def rand_cutout(x: torch.Tensor, ratio: float = 0.5) -> torch.Tensor:
-        if ratio <= 0:
-            return x
-        height = x.size(2)
-        width = x.size(3)
-        cutout_h = max(1, int(height * ratio + 0.5))
-        cutout_w = max(1, int(width * ratio + 0.5))
+    def _gaussian_kernel(
+        kernel_size: int,
+        sigma: float,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        coords = torch.arange(kernel_size, device=device, dtype=dtype)
+        coords = coords - (kernel_size - 1) / 2.0
+        grid_x, grid_y = torch.meshgrid(coords, coords, indexing="ij")
+        kernel = torch.exp(-(grid_x ** 2 + grid_y ** 2) / (2 * sigma ** 2))
+        kernel = kernel / kernel.sum()
+        return kernel
 
-        offset_x = torch.randint(0, height, (x.size(0), 1, 1), device=x.device)
-        offset_y = torch.randint(0, width, (x.size(0), 1, 1), device=x.device)
-        grid_x = torch.arange(height, device=x.device).view(1, -1, 1)
-        grid_y = torch.arange(width, device=x.device).view(1, 1, -1)
-        mask_x = (grid_x - offset_x).abs() > cutout_h // 2
-        mask_y = (grid_y - offset_y).abs() > cutout_w // 2
-        mask = (mask_x | mask_y).to(x.dtype).unsqueeze(1)
-        return x * mask
+    def rand_gaussian_blur(
+        x: torch.Tensor,
+        kernel_size: int = 5,
+        sigma_range: Tuple[float, float] = (0.4, 1.2),
+        p: float = 0.7,
+    ) -> torch.Tensor:
+        if kernel_size % 2 == 0 or p <= 0:
+            return x
+
+        apply_mask = torch.rand(x.size(0), 1, 1, 1, device=x.device) < p
+        if not apply_mask.any():
+            return x
+
+        sigma = torch.empty(1, device=x.device).uniform_(*sigma_range).item()
+        kernel = _gaussian_kernel(kernel_size, sigma, x.device, x.dtype)
+        kernel = kernel.expand(x.size(1), 1, kernel_size, kernel_size)
+        blurred = F.conv2d(x, kernel, padding=kernel_size // 2, groups=x.size(1))
+        return torch.where(apply_mask, blurred, x)
+
+    def rand_gaussian_noise(
+        x: torch.Tensor,
+        std_range: Tuple[float, float] = (0.05, 0.15),
+        p: float = 0.8,
+    ) -> torch.Tensor:
+        if p <= 0:
+            return x
+
+        apply_mask = torch.rand(x.size(0), 1, 1, 1, device=x.device) < p
+        if not apply_mask.any():
+            return x
+
+        noise_std = torch.empty(x.size(0), 1, 1, 1, device=x.device).uniform_(*std_range)
+        noise = torch.randn_like(x) * noise_std
+        return torch.where(apply_mask, x + noise, x)
 
     global _AUGMENT_FNS
     _AUGMENT_FNS = {
         "translation": [rand_translation],
-        "cutout": [rand_cutout],
+        "gaussian_blur": [rand_gaussian_blur],
+        "gaussian_noise": [rand_gaussian_noise],
     }
 
 
