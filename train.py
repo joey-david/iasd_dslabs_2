@@ -117,6 +117,7 @@ from utils import save_models
 
 N_CRITIC = 2
 BETA1 = 0.5
+EARLY_STOP_PATIENCE = 10
 
 
 def calculate_gradient_penalty(
@@ -310,6 +311,9 @@ if __name__ == '__main__':
     }
 
     epoch_iterator = tqdm(range(1, args.epochs + 1), desc="baseline-epoch", leave=False)
+    best_val_total = float("inf")
+    epochs_without_improvement = 0
+    best_epoch = 0
     for epoch in epoch_iterator:
         train_d_losses: List[float] = []
         train_g_losses: List[float] = []
@@ -359,6 +363,20 @@ if __name__ == '__main__':
         epoch_iterator.set_postfix(
             train_total=f"{avg_train_total:.4f}", val_total=f"{val_total:.4f}", w_dist=f"{avg_train_wd:.4f}"
         )
+
+        if val_total < best_val_total:
+            best_val_total = val_total
+            epochs_without_improvement = 0
+            best_epoch = epoch
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= EARLY_STOP_PATIENCE:
+                best_epoch_display = best_epoch if best_epoch > 0 else "N/A"
+                print(
+                    f"Early stopping triggered at epoch {epoch}. "
+                    f"Best validation total loss {best_val_total:.4f} at epoch {best_epoch_display}."
+                )
+                break
 
         if epoch % 10 == 0:
             save_models(G, D, "checkpoints")
