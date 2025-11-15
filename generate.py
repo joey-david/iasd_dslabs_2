@@ -200,7 +200,7 @@ if __name__ == '__main__':
     mnist_dim = 784
 
     G = Generator(g_output_dim=mnist_dim).to(device)
-    G_path = os.path.join('checkpoints', 'G.pth')
+    G_path = os.path.join('checkpoints', 'pr_200_G.pth')
     if os.path.exists(G_path):
         G_ckpt = torch.load(G_path, map_location=device)
         G.load_state_dict({k.replace('module.', ''): v for k, v in G_ckpt.items()})
@@ -210,7 +210,7 @@ if __name__ == '__main__':
     D = None
     if args.method != "standard":
         D = Discriminator(mnist_dim).to(device)
-        D_path = os.path.join('checkpoints', 'D.pth')
+        D_path = os.path.join('checkpoints', 'pr_200_D.pth')
         if os.path.exists(D_path):
             D_ckpt = torch.load(D_path, map_location=device)
             D.load_state_dict({k.replace('module.', ''): v for k, v in D_ckpt.items()})
@@ -267,4 +267,5 @@ if __name__ == '__main__':
     #reject 25
     #topk 22.9
     #metropolis 32
+
     # diversity 27
