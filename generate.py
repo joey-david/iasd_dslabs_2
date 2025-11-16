@@ -117,56 +117,7 @@ def top_k_sampling(G, D, batch_size, device, k_multiplier=5):
     return x[top_indices]
 
 
-def diversity_sampling(G, D, batch_size, device, num_candidates=10):
-    """
-    Sample with diversity consideration: pick samples that are both high quality and diverse
-    """
-    all_samples = []
-    all_scores = []
-    
-    # Generate multiple candidates for each desired sample
-    for _ in range(num_candidates):
-        z = torch.randn(batch_size, 100).to(device)
-        x = G(z)
-        
-        with torch.no_grad():
-            scores = D(x).squeeze()
-        
-        all_samples.append(x)
-        all_scores.append(scores)
-    
-    all_samples = torch.stack(all_samples)  # [num_candidates, batch_size, 784]
-    all_scores = torch.stack(all_scores)    # [num_candidates, batch_size]
-    
-    selected_samples = []
-    
-    for i in range(batch_size):
-        candidates = all_samples[:, i, :]  # [num_candidates, 784]
-        scores = all_scores[:, i]           # [num_candidates]
-        
-        if i == 0:
-            # First sample: pick highest score
-            best_idx = torch.argmax(scores)
-            selected_samples.append(candidates[best_idx])
-        else:
-            # Subsequent samples: balance quality and diversity
-            selected_tensor = torch.stack(selected_samples)
-            
-            diversity_scores = []
-            for j in range(len(candidates)):
-                # Compute minimum distance to already selected samples
-                dists = torch.norm(selected_tensor - candidates[j], dim=1)
-                min_dist = torch.min(dists)
-                diversity_scores.append(min_dist)
-            
-            diversity_scores = torch.tensor(diversity_scores).to(device)
-            
-            # Combined score: quality + diversity
-            combined_scores = scores + 0.5 * diversity_scores
-            best_idx = torch.argmax(combined_scores)
-            selected_samples.append(candidates[best_idx])
-    
-    return torch.stack(selected_samples)
+
 
 
 if __name__ == '__main__':
@@ -174,7 +125,7 @@ if __name__ == '__main__':
     parser.add_argument("--batch_size", type=int, default=64,
                       help="The batch size to use for generation.")
     parser.add_argument("--method", type=str, default="topk",
-                      choices=["standard", "rejection", "metropolis",  "topk", "diversity"],
+                      choices=["standard", "rejection", "metropolis",  "topk"],
                       help="Sampling method to use.")
     parser.add_argument("--threshold", type=float, default=0.8,
                       help="Threshold for rejection sampling.")
@@ -249,8 +200,6 @@ if __name__ == '__main__':
             elif args.method == "topk":
                 x = top_k_sampling(G, D, args.batch_size, device, 
                                   k_multiplier=args.k_multiplier)
-            elif args.method == "diversity":
-                x = diversity_sampling(G, D, args.batch_size, device)
             
             x = x.reshape(-1, 28, 28)
             
@@ -269,3 +218,4 @@ if __name__ == '__main__':
     #metropolis 32
 
     # diversity 27
+
