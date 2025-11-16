@@ -37,7 +37,7 @@ class Discriminator(nn.Module):
 
 class Discriminator_WGAN(nn.Module):
     def __init__(self, d_input_dim):
-        super(Discriminator, self).__init__()
+        super(Discriminator_WGAN, self).__init__()
         self.fc1 = nn.Linear(d_input_dim, 1024)
         self.fc2 = nn.Linear(self.fc1.out_features, self.fc1.out_features//2)
         self.fc3 = nn.Linear(self.fc2.out_features, self.fc2.out_features//2)
