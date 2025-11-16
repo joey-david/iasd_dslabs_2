@@ -4,7 +4,7 @@ import os
 import argparse
 import numpy as np
 
-from model import Generator, Discriminator
+from model import Generator, Discriminator,Discriminator_WGAN
 from utils import load_model
 
 def rejection_sampling(G, D, batch_size, device, threshold=0.8, max_attempts=10):
@@ -218,4 +218,5 @@ if __name__ == '__main__':
     #metropolis 32
 
     # diversity 27
+
 
