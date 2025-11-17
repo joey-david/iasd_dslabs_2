@@ -1,5 +1,7 @@
 import argparse
+import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -17,68 +19,116 @@ from utils import save_models
 N_CRITIC = 2
 BETA1 = 0.5
 MNIST_SHAPE = (1, 28, 28)
-DEFAULT_POLICY = "translation,cutout"
+DEFAULT_POLICY = "blur,bleed,localized_noise"
 DEFAULT_CHECKPOINT_DIR = "checkpoints_diffaug"
 
+
+@dataclass
+class DiffAugmentParams:
+    blur_strength: float = 3.0
+    blur_kernel_max: int = 9
+    bleed_strength: float = 1.0
+    bleed_length: float = 7.0
+    bleed_decay: float = 1.7
+    bleed_angle_deg: float = 15.0
+    noise_strength: float = 2.5
+
+
+_AUGMENT_PARAMS = DiffAugmentParams()
 _AUGMENT_FNS = {}
 
 
 def _register_diffaugment_ops() -> None:
-    """Register differentiable augmentations from Zhao et al., NeurIPS 2020."""
+    """Register differentiable augmentations tailored to MNIST strokes."""
 
-    def rand_translation(x: torch.Tensor, ratio: float = 0.125) -> torch.Tensor:
-        if ratio <= 0:
+    def _gaussian_kernel(kernel_size: int, sigma: float, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        coords = torch.arange(kernel_size, device=device, dtype=dtype) - kernel_size // 2
+        grid_y, grid_x = torch.meshgrid(coords, coords, indexing="ij")
+        kernel = torch.exp(-(grid_x ** 2 + grid_y ** 2) / (2 * sigma ** 2))
+        return kernel / kernel.sum()
+
+    def _shift_tensor(x: torch.Tensor, dx: int, dy: int, fill: float = 0.0) -> torch.Tensor:
+        shifted = torch.roll(x, shifts=(dy, dx), dims=(2, 3))
+        if dy > 0:
+            shifted[:, :, :dy, :] = fill
+        elif dy < 0:
+            shifted[:, :, dy:, :] = fill
+        if dx > 0:
+            shifted[:, :, :, :dx] = fill
+        elif dx < 0:
+            shifted[:, :, :, dx:] = fill
+        return shifted
+
+    def rand_blur(x: torch.Tensor) -> torch.Tensor:
+        params = _AUGMENT_PARAMS
+        if x.size(2) < 3 or x.size(3) < 3 or params.blur_strength <= 0:
+            return x
+        max_dim = min(max(3, params.blur_kernel_max), x.size(2), x.size(3))
+        if max_dim < 3:
+            return x
+        kernel_size = torch.randint(3, max_dim + 1, (1,), device=x.device).item()
+        if kernel_size % 2 == 0:
+            kernel_size = max(3, kernel_size - 1)
+        sigma = (0.7 + torch.rand(1, device=x.device).item()) * (1.0 + 0.3 * params.blur_strength)
+        kernel = _gaussian_kernel(kernel_size, sigma, x.device, x.dtype)
+        kernel = kernel.view(1, 1, kernel_size, kernel_size).repeat(x.size(1), 1, 1, 1)
+        pad = kernel_size // 2
+        padded = F.pad(x, (pad, pad, pad, pad), mode="reflect")
+        blurred = F.conv2d(padded, kernel, padding=0, groups=x.size(1))
+        base_mix = torch.empty(1, device=x.device).uniform_(0.5, 0.95).item()
+        strength_scale = min(params.blur_strength, 4.0)
+        mix = base_mix * (0.8 + 0.2 * strength_scale)
+        mix = float(max(0.0, min(mix, 0.98)))
+        return (1 - mix) * x + mix * blurred
+
+    def bleed_whites(x: torch.Tensor) -> torch.Tensor:
+        params = _AUGMENT_PARAMS
+        if params.bleed_strength <= 0:
             return x
 
-        batch, channels, height, width = x.shape
-        max_shift_h = int(height * ratio + 0.5)
-        max_shift_w = int(width * ratio + 0.5)
-        if max_shift_h == 0 and max_shift_w == 0:
+        whiteness = (x + 1.0) * 0.5
+        accum = whiteness.clone()
+        weight_sum = torch.ones_like(whiteness)
+        angle = math.radians(params.bleed_angle_deg)
+        direction = (math.cos(angle), math.sin(angle))
+        max_steps = max(1, int(round(params.bleed_length)))
+        decay = max(params.bleed_decay, 1e-3)
+
+        for step in range(1, max_steps + 1):
+            dx = int(round(direction[0] * step))
+            dy = int(round(direction[1] * step))
+            if dx == 0 and dy == 0:
+                continue
+            weight = math.exp(-(step - 1) / decay)
+            shifted = _shift_tensor(whiteness, dx, dy)
+            accum = accum + weight * shifted
+            weight_sum = weight_sum + weight
+
+        bleed = accum / weight_sum
+        scaled = whiteness + params.bleed_strength * (bleed - whiteness)
+        scaled = torch.clamp(scaled, 0.0, 1.0)
+        return scaled * 2.0 - 1.0
+
+    def localized_noise(x: torch.Tensor) -> torch.Tensor:
+        params = _AUGMENT_PARAMS
+        if params.noise_strength <= 0:
             return x
-
-        # Reflective padding lets us slice translated crops without grid_sample,
-        # which avoids backends missing the grid_sampler backward implementation.
-        pad = (max_shift_w, max_shift_w, max_shift_h, max_shift_h)
-        padded = F.pad(x, pad, mode="reflect")
-
-        shift_h = torch.randint(
-            -max_shift_h, max_shift_h + 1, (batch,), device=x.device
-        )
-        shift_w = torch.randint(
-            -max_shift_w, max_shift_w + 1, (batch,), device=x.device
-        )
-
-        translated = []
-        for idx in range(batch):
-            h_start = max_shift_h + shift_h[idx].item()
-            w_start = max_shift_w + shift_w[idx].item()
-            translated.append(
-                padded[idx : idx + 1, :, h_start : h_start + height, w_start : w_start + width]
-            )
-
-        return torch.cat(translated, dim=0)
-
-    def rand_cutout(x: torch.Tensor, ratio: float = 0.5) -> torch.Tensor:
-        if ratio <= 0:
-            return x
-        height = x.size(2)
-        width = x.size(3)
-        cutout_h = max(1, int(height * ratio + 0.5))
-        cutout_w = max(1, int(width * ratio + 0.5))
-
-        offset_x = torch.randint(0, height, (x.size(0), 1, 1), device=x.device)
-        offset_y = torch.randint(0, width, (x.size(0), 1, 1), device=x.device)
-        grid_x = torch.arange(height, device=x.device).view(1, -1, 1)
-        grid_y = torch.arange(width, device=x.device).view(1, 1, -1)
-        mask_x = (grid_x - offset_x).abs() > cutout_h // 2
-        mask_y = (grid_y - offset_y).abs() > cutout_w // 2
-        mask = (mask_x | mask_y).to(x.dtype).unsqueeze(1)
-        return x * mask
+        whiteness = (x + 1.0) * 0.5
+        gauss_kernel = _gaussian_kernel(5, 1.0, x.device, x.dtype)
+        gauss_kernel = gauss_kernel.view(1, 1, 5, 5).repeat(x.size(1), 1, 1, 1)
+        closeness = F.conv2d(whiteness, gauss_kernel, padding=2, groups=x.size(1))
+        stroke_presence = torch.clamp(whiteness * 1.5, 0.0, 1.0)
+        region_mask = F.max_pool2d(stroke_presence, kernel_size=11, stride=1, padding=5)
+        distance_weight = torch.clamp(closeness * region_mask, 0.0, 1.0)
+        noise = torch.rand_like(x) * 2.0 - 1.0
+        augmented = x + params.noise_strength * distance_weight * noise
+        return augmented.clamp(-1, 1)
 
     global _AUGMENT_FNS
     _AUGMENT_FNS = {
-        "translation": [rand_translation],
-        "cutout": [rand_cutout],
+        "blur": [rand_blur],
+        "bleed": [bleed_whites],
+        "localized_noise": [localized_noise],
     }
 
 
@@ -96,6 +146,10 @@ def apply_diffaugment(x: torch.Tensor, policy: str = DEFAULT_POLICY) -> torch.Te
         for fn in _AUGMENT_FNS.get(p, []):
             output = fn(output)
     return output.clamp(-1, 1)
+
+
+def list_diffaugment_ops() -> Tuple[str, ...]:
+    return tuple(_AUGMENT_FNS.keys())
 
 
 def discriminator_forward(images: torch.Tensor, D: nn.Module, policy: str) -> torch.Tensor:
